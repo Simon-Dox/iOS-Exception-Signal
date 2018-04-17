@@ -1,131 +1,185 @@
 //
 //  UncaughtExceptionHandler.m
+//  UncaughtExceptions
 //
-//  Created by Simon.Dong on 2018/03/15.
+//  Created by Matt Gallagher on 2010/05/25.
+//  Copyright 2010 Matt Gallagher. All rights reserved.
+//
+//  Permission is given to use this source code file, free of charge, in any
+//  project, commercial or otherwise, entirely at your risk, with the condition
+//  that any redistribution (in part or whole) of source code must retain
+//  this copyright and permission notice. Attribution in compiled projects is
+//  appreciated but not required.
 //
 
 #import "UncaughtExceptionHandler.h"
 #include <libkern/OSAtomic.h>
 #include <execinfo.h>
 
-NSString * const SignalExceptionName = @"SignalExceptionName";
-NSString * const SignalExceptionKey = @"SignalExceptionKey";
-NSString * const ExceptionCallStacks = @"ExceptionCallStacks";
+NSString * const UncaughtExceptionHandlerSignalExceptionName = @"UncaughtExceptionHandlerSignalExceptionName";
+NSString * const UncaughtExceptionHandlerSignalKey = @"UncaughtExceptionHandlerSignalKey";
+NSString * const UncaughtExceptionHandlerAddressesKey = @"UncaughtExceptionHandlerAddressesKey";
 
 volatile int32_t UncaughtExceptionCount = 0;
-static const int32_t UncaughtExceptionMaximum = 10;
+const int32_t UncaughtExceptionMaximum = 10;
+
+const NSInteger UncaughtExceptionHandlerSkipAddressCount = 4;
+const NSInteger UncaughtExceptionHandlerReportAddressCount = 5;
 
 @implementation UncaughtExceptionHandler
 
-+ (NSArray *)backtrace {
-    //设置保存调用堆栈的buffer最大为128，调用backtrace用来获取当前线程的调用堆栈，获取的信息存放在这里的callstack中
-    //backtrace返回值是实际获取的指针个数
-    void *callstack[128];
-    int frames = backtrace(callstack, 128);
-    char **strs = backtrace_symbols(callstack, frames);
-
-    NSMutableArray *backtrace = [NSMutableArray arrayWithCapacity:frames];
-    for (int i = 0; i < frames; i++) {
-        [backtrace addObject:[NSString stringWithUTF8String:strs[i]]];
-    }
-    free(strs);
-
-    return backtrace;
++ (NSArray *)backtrace
+{
+	 void* callstack[128];
+	 int frames = backtrace(callstack, 128);
+	 char **strs = backtrace_symbols(callstack, frames);
+	 
+	 int i;
+	 NSMutableArray *backtrace = [NSMutableArray arrayWithCapacity:frames];
+	 for (
+	 	i = UncaughtExceptionHandlerSkipAddressCount;
+	 	i < UncaughtExceptionHandlerSkipAddressCount +
+			UncaughtExceptionHandlerReportAddressCount;
+		i++)
+	 {
+	 	[backtrace addObject:[NSString stringWithUTF8String:strs[i]]];
+	 }
+	 free(strs);
+	 
+	 return backtrace;
 }
 
-- (void)handleException:(NSException *)exception {
-    if (!exception) {
-        return;
-    }
-
-    //获取崩溃信息
-    NSString *name = [exception name];
-    NSString *reason = [exception reason];
-    NSArray *callStack = [[exception userInfo] objectForKey:ExceptionCallStacks];
-
-    //组合崩溃信息并进行输出及保存
-    NSString *exceptionInfo = @"\n=============== Exception Info ===============\n";
-    exceptionInfo = [exceptionInfo stringByAppendingFormat:@"Exception Name: %@\n", name];
-    exceptionInfo = [exceptionInfo stringByAppendingFormat:@"Exception Reason: %@\n", reason];
-    exceptionInfo = [exceptionInfo stringByAppendingFormat:@"Exception Call Stack: %@\n", callStack];
-    ERRLOG(@"%@", exceptionInfo);
-
-    /* BEGIN PN:AR000A0EO2 Added by lwx515630 2017/12/26 */
-    //获取当前日期
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    [formatter setDateFormat:@"yyyy-MM-dd"];
-    NSString *dateTime = [formatter stringFromDate:[NSDate date]];
-    //拼接上传参数
-    NSDictionary *BI_crash = @{BI_key_app_ver:[BIDataReportHelper getAPPVersion],
-                       BI_key_phone_manufacturer:[BIDataReportHelper getPhoneManufacturer],
-                       BI_key_phone_type:[BIDataReportHelper getPhoneType],
-                       BI_key_phone_os_ver:[BIDataReportHelper getPhoneOSVersion],
-                       BI_key_throwable_msg:callStack,
-                       BI_key_throwable_stack_info:name,
-                       BI_key_throwable_cause_msg:reason,
-                       BI_key_crash_date:dateTime};
-    //写入文件保存崩溃信息(此处使用NSUserDefaults储存失败)
-    [BI_crash writeToFile:[NSString stringWithFormat:@"%@/Documents/BI_CrashError.log",NSHomeDirectory()] atomically:YES];
-    /* END PN:AR000A0EO2 Added by lwx515630 2017/12/26 */
+- (void)alertView:(UIAlertView *)anAlertView clickedButtonAtIndex:(NSInteger)anIndex
+{
+	if (anIndex == 0)
+	{
+		dismissed = YES;
+	}
 }
 
-void HandleException(NSException *exception) {
-    if (!exception) {
-        return;
-    }
-
-    int32_t exceptionCount = OSAtomicIncrement32(&UncaughtExceptionCount);
-    if (exceptionCount > UncaughtExceptionMaximum) {
-        NSLog(@"Exception异常数超过最大异常处理数");
-        return;
-    }
-
-    NSMutableDictionary *userInfo = [NSMutableDictionary dictionaryWithDictionary:[exception userInfo]];
-    [userInfo setObject:[exception callStackSymbols] forKey:ExceptionCallStacks];
-
-    NSException *exc = [NSException exceptionWithName:[exception name]
-                                               reason:[exception reason]
-                                             userInfo:userInfo];
-
-    [[[UncaughtExceptionHandler alloc] init] performSelectorOnMainThread:@selector(handleException:)
-                                                              withObject: exc
-                                                           waitUntilDone:YES];
+- (void)validateAndSaveCriticalApplicationData
+{
+	
 }
 
-void SignalHandler(int signal) {
-    int32_t exceptionCount = OSAtomicIncrement32(&UncaughtExceptionCount);
-    if (exceptionCount > UncaughtExceptionMaximum) {
-        NSLog(@"Signal异常数超过最大异常处理数, signal = %d.", signal);
-        exit(0);
-    }
+- (void)handleException:(NSException *)exception
+{
+	[self validateAndSaveCriticalApplicationData];
+	
+	UIAlertView *alert =
+		[[[UIAlertView alloc]
+			initWithTitle:NSLocalizedString(@"Unhandled exception", nil)
+			message:[NSString stringWithFormat:NSLocalizedString(
+				@"You can try to continue but the application may be unstable.\n\n"
+				@"Debug details follow:\n%@\n%@", nil),
+				[exception reason],
+				[[exception userInfo] objectForKey:UncaughtExceptionHandlerAddressesKey]]
+			delegate:self
+			cancelButtonTitle:NSLocalizedString(@"Quit", nil)
+			otherButtonTitles:NSLocalizedString(@"Continue", nil), nil]
+		autorelease];
+	[alert show];
+	
+	CFRunLoopRef runLoop = CFRunLoopGetCurrent();
+	CFArrayRef allModes = CFRunLoopCopyAllModes(runLoop);
+	
+	while (!dismissed)
+	{
+		for (NSString *mode in (NSArray *)allModes)
+		{
+			CFRunLoopRunInMode((CFStringRef)mode, 0.001, false);
+		}
+	}
+	
+	CFRelease(allModes);
 
-    NSString *reason = [NSString stringWithFormat:@"Signal %d was raised.", signal];
-
-    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
-    [userInfo setObject:[NSNumber numberWithInt:signal] forKey:SignalExceptionKey];
-	[userInfo setObject:[[UncaughtExceptionHandler backtrace] copy] forKey:ExceptionCallStacks];
-
-    NSException *exc = [NSException exceptionWithName:SignalExceptionName
-                                               reason:reason
-                                             userInfo:userInfo];
-
-    [[[UncaughtExceptionHandler alloc] init] performSelectorOnMainThread:@selector(handleException:)
-                                                              withObject:exc
-                                                           waitUntilDone:YES];
-}
-
-+ (void)installUncaughtExceptionHandler {
-    //设置系统异常捕获函数
-    NSSetUncaughtExceptionHandler(&HandleException);
-    //设置Signal信息处理
-    signal(SIGABRT, SignalHandler);
-    signal(SIGILL, SignalHandler);
-#ifdef DEBUG
-    signal(SIGSEGV, SignalHandler);
-#endif
-    signal(SIGFPE, SignalHandler);
-    signal(SIGBUS, SignalHandler);
-    signal(SIGPIPE, SignalHandler);
+	NSSetUncaughtExceptionHandler(NULL);
+	signal(SIGABRT, SIG_DFL);
+	signal(SIGILL, SIG_DFL);
+	signal(SIGSEGV, SIG_DFL);
+	signal(SIGFPE, SIG_DFL);
+	signal(SIGBUS, SIG_DFL);
+	signal(SIGPIPE, SIG_DFL);
+	
+	if ([[exception name] isEqual:UncaughtExceptionHandlerSignalExceptionName])
+	{
+		kill(getpid(), [[[exception userInfo] objectForKey:UncaughtExceptionHandlerSignalKey] intValue]);
+	}
+	else
+	{
+		[exception raise];
+	}
 }
 
 @end
+
+void HandleException(NSException *exception)
+{
+	int32_t exceptionCount = OSAtomicIncrement32(&UncaughtExceptionCount);
+	if (exceptionCount > UncaughtExceptionMaximum)
+	{
+		return;
+	}
+	
+	NSArray *callStack = [UncaughtExceptionHandler backtrace];
+	NSMutableDictionary *userInfo =
+		[NSMutableDictionary dictionaryWithDictionary:[exception userInfo]];
+	[userInfo
+		setObject:callStack
+		forKey:UncaughtExceptionHandlerAddressesKey];
+	
+	[[[[UncaughtExceptionHandler alloc] init] autorelease]
+		performSelectorOnMainThread:@selector(handleException:)
+		withObject:
+			[NSException
+				exceptionWithName:[exception name]
+				reason:[exception reason]
+				userInfo:userInfo]
+		waitUntilDone:YES];
+}
+
+void SignalHandler(int signal)
+{
+	int32_t exceptionCount = OSAtomicIncrement32(&UncaughtExceptionCount);
+	if (exceptionCount > UncaughtExceptionMaximum)
+	{
+		return;
+	}
+	
+	NSMutableDictionary *userInfo =
+		[NSMutableDictionary
+			dictionaryWithObject:[NSNumber numberWithInt:signal]
+			forKey:UncaughtExceptionHandlerSignalKey];
+
+	NSArray *callStack = [UncaughtExceptionHandler backtrace];
+	[userInfo
+		setObject:callStack
+		forKey:UncaughtExceptionHandlerAddressesKey];
+	
+	[[[[UncaughtExceptionHandler alloc] init] autorelease]
+		performSelectorOnMainThread:@selector(handleException:)
+		withObject:
+			[NSException
+				exceptionWithName:UncaughtExceptionHandlerSignalExceptionName
+				reason:
+					[NSString stringWithFormat:
+						NSLocalizedString(@"Signal %d was raised.", nil),
+						signal]
+				userInfo:
+					[NSDictionary
+						dictionaryWithObject:[NSNumber numberWithInt:signal]
+						forKey:UncaughtExceptionHandlerSignalKey]]
+		waitUntilDone:YES];
+}
+
+void InstallUncaughtExceptionHandler()
+{
+	NSSetUncaughtExceptionHandler(&HandleException);
+	signal(SIGABRT, SignalHandler);
+	signal(SIGILL, SignalHandler);
+	signal(SIGSEGV, SignalHandler);
+	signal(SIGFPE, SignalHandler);
+	signal(SIGBUS, SignalHandler);
+	signal(SIGPIPE, SignalHandler);
+}
+
